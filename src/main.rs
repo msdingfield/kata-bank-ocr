@@ -14,6 +14,7 @@ use std::env;
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
 use bank_ocr_test::do_tests;
+use crate::bank_ocr::{is_checksum_valid, Status};
 
 fn main() -> io::Result<()> {
     let args : Vec<String> = env::args().collect();
@@ -44,12 +45,21 @@ fn parse(input: &String, _output: &String) {
         if lr.is_ok() {
             let line = lr.unwrap();
             let result = parser.process_line(line);
-            if result.error.is_some() {
-                let e = result.error.unwrap();
-                println!("ERROR: {}:{}: row {}: {}", e.line_number, e.row, e.col, e.message);
-            } else if result.account_number.is_some() {
-                let buf = result.account_number.unwrap();
-                println!("{}", buf);
+
+            match result {
+                Status::Success(account_number) => {
+                    if is_checksum_valid(&account_number) {
+                        println!("{}", account_number);
+                    } else {
+                        println!("{} bad checksum line {}", account_number, parser.get_line_number());
+                    }
+                }
+                Status::Error(error) => {
+                    println!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message);
+                }
+                _ => {
+
+                }
             }
         } else {
             println!("Error reading line.");

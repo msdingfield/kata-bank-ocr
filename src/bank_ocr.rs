@@ -2,44 +2,34 @@
 pub struct Parser {
     register: [u8; 10],
     line_number: usize,
-    error : Option<Error>,
+    skip: bool,
 }
 
 // Parsing status for current entry
-#[derive(PartialEq)]
+#[derive(Debug)]
 pub enum Status {
     // Entry parsed successfully.  Account number is available.
-    Success,
+    Success(String),
 
     // Error occurred.  Error field is populated with details.  Partially parsed account number
     // may be available depending on error.
-    Error,
+    Error(Error),
 
     // Not all rows of current entry have been parsed.  Continue parsing lines.
     Incomplete
 }
 
-// Entry for each account number parsed
-pub struct Entry {
-    // Parsing status of the current entry
-    pub status: Status,
-
-    // Parse account number, if any
-    pub account_number: Option<String>,
-
-    // Parse error, if any
-    pub error : Option<Error>,
-}
-
-impl Entry {
-    // Test if parsing of current entry is complete
+impl Status {
     pub fn is_complete(&self) -> bool {
-        self.status != Status::Incomplete
+        match self {
+            Status::Incomplete => false,
+            _ => true,
+        }
     }
 }
 
 // Hold error information
-#[derive(Clone)]
+#[derive(PartialEq, Debug)]
 pub struct Error {
     // Message describing the error
     pub message : String,
@@ -61,13 +51,25 @@ impl Parser {
         Parser {
             register: [0; 10],
             line_number: 0,
-            error: Option::None,
+            skip: false,
         }
     }
 
+    pub fn get_line_number(&self) -> usize {
+        self.line_number
+    }
+
     // Process a line of input
-    pub fn process_line(&mut self, line: String) -> Entry {
-        let row = self.line_number % 4;
+    pub fn process_line(&mut self, line: String) -> Status {
+        self.line_number += 1;
+
+        let row = self.row();
+        if row == 0 {
+            self.skip = false;
+            self.clear_register();
+        } else if self.skip {
+            return Status::Incomplete;
+        }
 
         let mut col = 0;
         for ch in line.chars() {
@@ -77,81 +79,53 @@ impl Parser {
             let bit_pos = bit_pos(row, pos);
             if on == '\0' {
                 if ch != ' ' {
-                    self.emit_error(
-                        format!("Expected space but found '{}'.", ch),
-                        row,
-                        col
-                    );
-                    break;
+                    return self.build_error(format!("Expected space but found '{}'.", ch), col);
                 }
             } else {
                 if ch == on {
                     self.register[dig] |= 1 << bit_pos;
                 } else if ch != ' ' {
-                    self.emit_error(
-                        format!("Expected space or '{}' but found '{}'.", on, ch),
-                        row,
-                        col,
-                    );
-                    break;
+                    return self.build_error(format!("Expected space or '{}' but found '{}'.", on, ch), col);
                 }
             }
             col += 1;
         }
 
-        let entry = self.build_entry(row);
-
-        self.error = Option::None;
-        self.line_number += 1;
-
-        return entry;
+        return if row < 3 {
+            Status::Incomplete
+        } else {
+            Status::Success(self.read_register())
+        };
     }
 
-    // Build entry response for the current line
-    fn build_entry(&mut self, row : usize) -> Entry {
-        let account_number =
-            if row == 3 {
-                Option::Some(self.read_and_clear_register())
-            } else {
-                Option::None
-            };
-
-        let status =
-            if self.error.is_some() {
-                Status::Error
-            } else if row < 3 {
-                Status::Incomplete
-            } else {
-                Status::Success
-            };
-
-        Entry {
-            status,
-            account_number,
-            error: self.error.clone(),
-        }
+    fn row(&self) -> usize {
+        (self.line_number - 1) % 4
     }
 
     // Read account number from register and reset register to empty
-    fn read_and_clear_register(&mut self) -> String {
+    fn read_register(&mut self) -> String {
         let mut account_number = String::new();
         for index in 0..9 {
             account_number.push(reg_to_digit(self.register[index]));
-            self.register[index] = 0;
         }
         account_number
     }
 
-    // Emit a parsing error
-    fn emit_error(&mut self, message : String, row : usize, col : usize) {
-        self.error = Option::Some(
-            Error {
-                message,
-                line_number: self.line_number,
-                row,
-                col
-            }
-        );
+    fn clear_register(&mut self) {
+        for index in 0..9 {
+            self.register[index] = 0;
+        }
+    }
+
+    // Build a parsing error
+    fn build_error(&mut self, message : String, col : usize) -> Status {
+        self.skip = true;
+        Status::Error(Error {
+            message,
+            line_number: self.line_number,
+            row: self.row(),
+            col
+        })
     }
 }
 
@@ -202,3 +176,20 @@ fn reg_to_digit(val: u8) -> char {
     }
 }
 
+pub fn is_checksum_valid(account_number : &String) -> bool {
+    if account_number.len() != 9 {
+        return false;
+    }
+
+    let mut checksum = 0;
+    let mut coefficient : u32 = 1;
+    for ch in account_number.chars().rev() {
+        match ch.to_digit(10) {
+            Some(digit) => checksum += digit * coefficient,
+            _ => return false
+        }
+        coefficient += 1;
+    }
+
+    checksum % 11 == 0
+}
