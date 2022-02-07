@@ -1,27 +1,11 @@
-// https://codingdojo.org/kata/BankOCR/
-
-/*
-012345678901234567890123456
-    _  _     _  _  _  _  _
-  | _| _||_||_ |_   ||_||_|
-  ||_  _|  | _||_|  ||_| _|
-
- */
-mod bank_ocr;
-mod bank_ocr_test;
-
 use std::env;
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
-use bank_ocr_test::do_tests;
-use crate::bank_ocr::{is_checksum_valid, Status};
+use bankocr::{is_checksum_valid, Parser, Status};
 
 fn main() -> io::Result<()> {
     let args : Vec<String> = env::args().collect();
-    if args.len() == 2 && args[1] == "--test" {
-        println!("Running tests...");
-        do_tests();
-    } else if args.len() == 3 {
+    if args.len() == 3 {
         println!("Parsing {}", args[1]);
         parse(&args[1], &args[2]);
     } else {
@@ -40,7 +24,7 @@ fn parse(input: &String, _output: &String) {
     let file = input_result.unwrap();
     let reader = BufReader::new(file);
 
-    let mut parser = bank_ocr::Parser::new();
+    let mut parser = Parser::new();
     for lr in reader.lines() {
         if lr.is_ok() {
             let line = lr.unwrap();
