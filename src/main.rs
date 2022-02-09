@@ -23,8 +23,8 @@ fn process_file(input: &String, output: &String) -> io::Result<()> {
         reader.lines().flat_map(|line| line)
     ).for_each(|out_line| {
         let result = writeln!(writer, "{}", out_line);
-        if result.is_err() {
-            panic!("Error writing to output: {}", result.err().unwrap())
+        if let Err(error) = result {
+            panic!("Error writing to output: {}", error);
         }
     });
 
