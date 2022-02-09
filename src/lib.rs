@@ -5,6 +5,31 @@ pub struct Parser {
     skip: bool,
 }
 
+pub fn read_account_numbers<I, O>(lines:  I, mut output: O)
+    where I: Iterator<Item = String>, O: FnMut(String)
+{
+    let mut parser = Parser::new();
+    for line in lines {
+        let status = parser.process_line(line);
+
+        match status {
+            Status::Success(account_number) => {
+                if is_checksum_valid(&account_number) {
+                    output(account_number);
+                } else {
+                    output(format!("{} bad checksum line {}", account_number, parser.get_line_number()));
+                }
+            }
+            Status::Error(error) => {
+                output(format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message));
+            }
+            Status::Incomplete => {
+                // Keep going if parse of number is incomplete
+            }
+        }
+    }
+}
+
 // Parsing status for current entry
 #[derive(Debug)]
 pub enum Status {
@@ -373,6 +398,20 @@ mod tests {
         assert!(!is_checksum_valid(&"000000001".to_string()), "checksome");
         assert!(is_checksum_valid(&"500000301".to_string()), "checksome");
         assert!(is_checksum_valid(&"135802539".to_string()), "checksome");
+    }
+
+    #[test]
+    fn read_multiple_lines() {
+        let mut output: Vec<String> = Vec::new();
+        let input = vec![
+            "    _  _  _  _  _  _     _ ".to_string(),
+            "|_||_|| || ||_   |  |  ||_ ".to_string(),
+            "  | _||_||_||_|  |  |  | _|".to_string(),
+            "".to_string()
+        ];
+        let iter = input.iter().map(|s| s.to_string());
+        read_account_numbers(iter, |out_line| { output.push(out_line) });
+        println!("{:?}", output);
     }
 
     fn parse_entry(lines : [&str; 4]) -> Status {
