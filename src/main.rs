@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
-use bankocr::{read_account_numbers};
+use bankocr::Processor;
 
 fn main() -> io::Result<()> {
     let args : Vec<String> = env::args().collect();
@@ -19,15 +19,14 @@ fn process_file(input: &String, output: &String) -> io::Result<()> {
     let reader = open_input(input)?;
     let mut writer = open_output(output)?;
 
-    read_account_numbers(
-        reader.lines().flat_map(|line| line),
-        |out_line| {
-            let result = writeln!(writer, "{}", out_line);
-            if result.is_err() {
-                panic!("Error writing to output: {}", result.err().unwrap())
-            }
+    Processor::new(
+        reader.lines().flat_map(|line| line)
+    ).for_each(|out_line| {
+        let result = writeln!(writer, "{}", out_line);
+        if result.is_err() {
+            panic!("Error writing to output: {}", result.err().unwrap())
         }
-    );
+    });
 
     Ok(())
 }

@@ -5,28 +5,77 @@ pub struct Parser {
     skip: bool,
 }
 
-pub fn read_account_numbers<I, O>(lines:  I, mut output: O)
-    where I: Iterator<Item = String>, O: FnMut(String)
+// Transforms an input iterator into a processed output iterator
+pub struct Processor<I>
+    where I: Iterator<Item = String>
 {
-    let mut parser = Parser::new();
-    for line in lines {
-        let status = parser.process_line(line);
+    lines: I,
+    parser: Parser,
+}
 
-        match status {
-            Status::Success(account_number) => {
-                if is_checksum_valid(&account_number) {
-                    output(account_number);
-                } else {
-                    output(format!("{} bad checksum line {}", account_number, parser.get_line_number()));
+impl<I> Processor<I>
+    where I: Iterator<Item = String>
+{
+    pub fn new(lines: I) -> Processor<I>{
+        Processor {
+            lines,
+            parser: Parser::new()
+        }
+    }
+}
+
+impl<I> Iterator for Processor<I>
+    where I: Iterator<Item = String>
+{
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let next = self.lines.next();
+            match next {
+                Option::Some(line) => {
+                    let status = self.parser.process_line(line);
+
+                    match status {
+                        Status::Success(account_number) => {
+                            if is_checksum_valid(&account_number) {
+                                return Some(account_number)
+                            } else {
+                                return Some(format!("{} bad checksum line {}", account_number, self.parser.get_line_number()))
+                            }
+                        }
+                        Status::Error(error) => {
+                            return Some(format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message))
+                        }
+                        Status::Incomplete => {
+                            // Keep going if parse of number is incomplete
+                        }
+                    }
                 }
-            }
-            Status::Error(error) => {
-                output(format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message));
-            }
-            Status::Incomplete => {
-                // Keep going if parse of number is incomplete
+
+                Option::None => return Option::None
             }
         }
+        //     let status = parser.process_line(line);
+        //
+        //     match status {
+        //         Status::Success(account_number) => {
+        //             if is_checksum_valid(&account_number) {
+        //                 return account_number
+        //             } else {
+        //                 return Ok(format!("{} bad checksum line {}", account_number, parser.get_line_number()))
+        //             }
+        //         }
+        //         Status::Error(error) => {
+        //             return Ok(format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message))
+        //         }
+        //         Status::Incomplete => {
+        //             // Keep going if parse of number is incomplete
+        //             return Err("skip".to_string())
+        //         }
+        //     }
+        // }
+        // Option::None
     }
 }
 
@@ -402,7 +451,6 @@ mod tests {
 
     #[test]
     fn read_multiple_lines() {
-        let mut output: Vec<String> = Vec::new();
         let input = vec![
             "    _  _  _  _  _  _     _ ".to_string(),
             "|_||_|| || ||_   |  |  ||_ ".to_string(),
@@ -410,8 +458,23 @@ mod tests {
             "".to_string()
         ];
         let iter = input.iter().map(|s| s.to_string());
-        read_account_numbers(iter, |out_line| { output.push(out_line) });
+        let output : Vec<String> = Processor::new(iter).collect();
         println!("{:?}", output);
+    }
+
+    #[test]
+    fn do_iter() {
+        let input = vec![
+            "    _  _  _  _  _  _     _ ".to_string(),
+            "|_||_|| || ||_   |  |  ||_ ".to_string(),
+            "  | _||_||_||_|  |  |  | _|".to_string(),
+            "".to_string()
+        ];
+        let iter = input.iter().map(|s| s.to_string());
+        let it = Processor::new(iter);
+        for s in it {
+            println!("{}", s);
+        }
     }
 
     fn parse_entry(lines : [&str; 4]) -> Status {
