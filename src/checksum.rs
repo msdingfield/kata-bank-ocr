@@ -1,7 +1,5 @@
 use std::str;
 
-
-
 fn alternate_digits(ch : char) -> &'static str {
     match ch {
         '0' => "8",

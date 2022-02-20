@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
-use bankocr::Processor;
+use bankocr::{format_line, Processor};
 
 fn main() -> io::Result<()> {
     let args : Vec<String> = env::args().collect();
@@ -21,7 +21,7 @@ fn process_file(input: &String, output: &String) -> io::Result<()> {
 
     Processor::new(
         reader.lines().flat_map(|line| line)
-    ).for_each(|out_line| {
+    ).map(format_line).for_each(|out_line| {
         let result = writeln!(writer, "{}", out_line);
         if let Err(error) = result {
             panic!("Error writing to output: {}", error);

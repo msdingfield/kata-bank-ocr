@@ -1,3 +1,4 @@
+use std::str;
 
 // Parser of Bank OCR account numbers
 pub struct Parser {
@@ -27,6 +28,11 @@ pub struct Error {
 pub enum Status {
     // Entry parsed successfully.  Account number is available.
     Success(String),
+
+    BadDigits {
+        account_number: String,
+        alternates: Vec<String>,
+    },
 
     // Error occurred.  Error field is populated with details.  Partially parsed account number
     // may be available depending on error.
@@ -69,7 +75,10 @@ impl Parser {
             let dig = col / 3;
             let on = on_char(row, pos);
             let bit_pos = bit_pos(row, pos);
-            if on == '\0' {
+
+            if !ch.is_whitespace() && dig > 8 {
+                return self.build_error(format!("Input line is too long."), col);
+            } else if on == '\0' {
                 if ch != ' ' {
                     return self.build_error(format!("Expected space but found '{}'.", ch), col);
                 }
@@ -86,7 +95,12 @@ impl Parser {
         return if row < 3 {
             Status::Incomplete
         } else {
-            Status::Success(self.read_register())
+            let (success, account_number, alternates) = self.read_register();
+            if success {
+                Status::Success(account_number)
+            } else {
+                Status::BadDigits {account_number, alternates}
+            }
         };
     }
 
@@ -95,12 +109,36 @@ impl Parser {
     }
 
     // Read account number from register and reset register to empty
-    fn read_register(&mut self) -> String {
-        let mut account_number = String::new();
+    fn read_register(&mut self) -> (bool, String, Vec<String>) {
+        let mut buffer : [u8;9] = [0;9];
+
+        let mut bad = 0;
+        let mut last_bad = 0usize;
         for index in 0..9 {
-            account_number.push(reg_to_digit(self.register[index]));
+            let digit = reg_to_digit(self.register[index]);
+            buffer[index] = digit as u8;
+            if digit == '?' {
+                bad += 1;
+                last_bad = index;
+            }
         }
-        account_number
+        let account_number = str::from_utf8(&buffer).unwrap().to_string();
+
+        let mut alts = Vec::new();
+        match bad {
+            0 => (true, account_number, alts),
+            1 => {
+                let alt_digits = possible_digits(self.register[last_bad]);
+                alt_digits.iter().for_each(|dig| {
+                    buffer[last_bad] = *dig;
+                    alts.push(str::from_utf8(&buffer).unwrap().to_string());
+                });
+                (false, account_number, alts)
+            }
+            _ => (false, account_number, alts)
+        }
+
+
     }
 
     fn clear_register(&mut self) {
@@ -137,6 +175,17 @@ fn on_char(row: usize, col: usize) -> char {
     }
 }
 
+fn possible_digits(reg: u8) -> Vec<u8> {
+    let mut alts = Vec::new();
+    for n in 1..=7 {
+        let alt = reg_to_digit(reg ^ (1 << n));
+        if alt != '?' {
+            alts.push(alt as u8);
+        }
+    }
+    alts
+}
+
 // Determine the output character associated with a value in the register
 fn reg_to_digit(val: u8) -> char {
     match val {
@@ -150,7 +199,7 @@ fn reg_to_digit(val: u8) -> char {
         146 => '7',
         254 => '8',
         246 => '9',
-        _ => '?' // The value doesn't correspond to a numberical digit
+        _ => '?' // The value doesn't correspond to a numerical digit
     }
 }
 
@@ -173,86 +222,123 @@ mod tests {
     use super::*;
 
     #[test]
+    fn possible_alternative_digits() {
+        assert_eq!(possible_digits(100), vec![]);
+        assert_eq!(possible_digits(94), vec!['0' as u8]);
+        assert_eq!(possible_digits(2), vec!['1' as u8]);
+        assert_eq!(possible_digits(60), vec!['2' as u8]);
+        assert_eq!(possible_digits(54), vec!['3' as u8]);
+        assert_eq!(possible_digits(98), vec!['4' as u8]);
+        assert_eq!(possible_digits(102), vec!['5' as u8]);
+        assert_eq!(possible_digits(110), vec!['6' as u8]);
+        assert_eq!(possible_digits(18), vec!['7' as u8]);
+        assert_eq!(possible_digits(126), vec!['8' as u8]);
+        assert_eq!(possible_digits(182), vec!['9' as u8]);
+        assert_eq!(possible_digits(82), vec!['4' as u8, '1' as u8]);
+        assert_eq!(possible_digits(190), vec!['2' as u8, '3' as u8, '8' as u8]);
+    }
+
+    #[test]
+    fn too_many_digits_produces_an_error() {
+        assert_eq!("ERROR: 1:28: row 0: Input line is too long.", parse_to_string([
+            " _  _  _  _  _  _  _  _  _  _ ",
+            "| || || || || || || || || || |",
+            "|_||_||_||_||_||_||_||_||_||_|",
+            ""
+        ]));
+    }
+
+    #[test]
+    fn too_few_digits_is_treated_as_illegible() {
+        assert_eq!("ILLEGIBLE: 00000000? []", parse_to_string([
+            " _  _  _  _  _  _  _  _ ",
+            "| || || || || || || || |",
+            "|_||_||_||_||_||_||_||_|",
+            ""
+        ]));
+    }
+
+    #[test]
     fn can_parse_a_correctly_formatted_number() {
 
-        assert_eq!("000000000", parse_to_string([
+        assert_eq!("SUCCESS: 000000000", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "| || || || || || || || || |",
             "|_||_||_||_||_||_||_||_||_|",
             ""
         ]));
 
-        assert_eq!("111111111", parse_to_string([
+        assert_eq!("SUCCESS: 111111111", parse_to_string([
             "                           ",
             "  |  |  |  |  |  |  |  |  |",
             "  |  |  |  |  |  |  |  |  |",
             ""
         ]));
 
-        assert_eq!("222222222", parse_to_string([
+        assert_eq!("SUCCESS: 222222222", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             " _| _| _| _| _| _| _| _| _|",
             "|_ |_ |_ |_ |_ |_ |_ |_ |_ ",
             ""
         ]));
 
-        assert_eq!("333333333", parse_to_string([
+        assert_eq!("SUCCESS: 333333333", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             " _| _| _| _| _| _| _| _| _|",
             " _| _| _| _| _| _| _| _| _|",
             ""
         ]));
 
-        assert_eq!("444444444", parse_to_string([
+        assert_eq!("SUCCESS: 444444444", parse_to_string([
             "                           ",
             "|_||_||_||_||_||_||_||_||_|",
             "  |  |  |  |  |  |  |  |  |",
             ""
         ]));
 
-        assert_eq!("555555555", parse_to_string([
+        assert_eq!("SUCCESS: 555555555", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "|_ |_ |_ |_ |_ |_ |_ |_ |_ ",
             " _| _| _| _| _| _| _| _| _|",
             ""
         ]));
 
-        assert_eq!("666666666", parse_to_string([
+        assert_eq!("SUCCESS: 666666666", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "|_ |_ |_ |_ |_ |_ |_ |_ |_ ",
             "|_||_||_||_||_||_||_||_||_|",
             ""
         ]));
 
-        assert_eq!("777777777", parse_to_string([
+        assert_eq!("SUCCESS: 777777777", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "  |  |  |  |  |  |  |  |  |",
             "  |  |  |  |  |  |  |  |  |",
             ""
         ]));
 
-        assert_eq!("888888888", parse_to_string([
+        assert_eq!("SUCCESS: 888888888", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "|_||_||_||_||_||_||_||_||_|",
             "|_||_||_||_||_||_||_||_||_|",
             ""
         ]));
 
-        assert_eq!("999999999", parse_to_string([
+        assert_eq!("SUCCESS: 999999999", parse_to_string([
             " _  _  _  _  _  _  _  _  _ ",
             "|_||_||_||_||_||_||_||_||_|",
             " _| _| _| _| _| _| _| _| _|",
             ""
         ]));
 
-        assert_eq!("123456789", parse_to_string([
+        assert_eq!("SUCCESS: 123456789", parse_to_string([
             "    _  _     _  _  _  _  _ ",
             "  | _| _||_||_ |_   ||_||_|",
             "  ||_  _|  | _||_|  ||_| _|",
             ""
         ]));
 
-        assert_eq!("000000051", parse_to_string([
+        assert_eq!("SUCCESS: 000000051", parse_to_string([
             " _  _  _  _  _  _  _  _    ",
             "| || || || || || || ||_   |",
             "|_||_||_||_||_||_||_| _|  |",
@@ -263,14 +349,14 @@ mod tests {
 
     #[test]
     fn illegible_digits_receive_placeholder() {
-        assert_eq!("49006771?", parse_to_string([
+        assert_eq!("ILLEGIBLE: 49006771? [\"490067713\", \"490067715\"]", parse_to_string([
             "    _  _  _  _  _  _     _ ",
             "|_||_|| || ||_   |  |  | _ ",
             "  | _||_||_||_|  |  |  | _|",
             ""
         ]));
 
-        assert_eq!("1234?678?", parse_to_string([
+        assert_eq!("ILLEGIBLE: 1234?678? []", parse_to_string([
             "    _  _     _  _  _  _  _ ",
             "  | _| _||_| _ |_   ||_||_|",
             "  ||_  _|  | _||_|  ||_| _ ",
@@ -355,12 +441,15 @@ mod tests {
         let status = parse_entry(lines);
         match status {
             Status::Success(account_number) => {
-                account_number
+                format!("SUCCESS: {}", account_number)
+            }
+            Status::BadDigits { account_number, alternates } => {
+                format!("ILLEGIBLE: {} {:?}", account_number, alternates)
             }
             Status::Error(error) => {
                 format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message)
             }
-            _ => {
+            Status::Incomplete => {
                 String::from("Unexpected")
             }
         }
