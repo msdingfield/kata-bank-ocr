@@ -1,22 +1,8 @@
 use std::str;
 
-fn alternate_digits(ch : char) -> &'static str {
-    match ch {
-        '0' => "8",
-        '1' => "7",
-        '2' => "",
-        '3' => "9",
-        '4' => "",
-        '5' => "69",
-        '6' => "58",
-        '7' => "1",
-        '8' => "069",
-        '9' => "358",
-        _ => "",
-    }
-}
-
+// Test if the account number has a valid checksum
 pub fn is_checksum_valid(account_number : &str) -> bool {
+    assert!(is_numeric(account_number), "account_number must be numeric.");
     if account_number.len() != 9 {
         return false;
     }
@@ -32,6 +18,31 @@ pub fn is_checksum_valid(account_number : &str) -> bool {
     }
 
     checksum % 11 == 0
+}
+
+fn is_numeric(account_number : &str) -> bool {
+    for ch in account_number.chars() {
+        if ! ch.is_numeric() {
+            return false;
+        }
+    }
+    return true;
+}
+// For a given digit, find other digits that can be formed by flipping a single segment
+fn alternate_digits(ch : u8) -> &'static [u8] {
+    match ch as char {
+        '0' => &['8' as u8],
+        '1' => &['7' as u8],
+        '2' => &[],
+        '3' => &['9' as u8],
+        '4' => &[],
+        '5' => &['6' as u8, '9' as u8],
+        '6' => &['5' as u8, '8' as u8],
+        '7' => &['1' as u8],
+        '8' => &['0' as u8, '6' as u8, '9' as u8],
+        '9' => &['3' as u8, '5' as u8, '8' as u8],
+        _ => panic!("Character must be in range '0' .. '9'."),
+    }
 }
 
 // Adjacent digits
@@ -70,24 +81,29 @@ pub fn is_checksum_valid(account_number : &str) -> bool {
 // |_| |_|
 // |_|  _|
 pub fn find_adjacent(account_number : &str) -> Vec<String> {
-    let mut matches = vec![];
-    let mut buffer = account_number.to_string();
-    unsafe {
-        let bytes = buffer.as_bytes_mut();
-        for n in 0..bytes.len() {
-            let ch = bytes[n];
-            let alts = alternate_digits(ch as char).as_bytes();
-            for alt in alts {
-                bytes[n] = *alt;
-                let result = str::from_utf8(bytes);
-                if let Ok(candidate) = result {
-                    if is_checksum_valid(&candidate) {
-                        matches.push(candidate.to_string());
-                    }
+    assert_eq!(account_number.len(), 9, "account_number must be exactly 9 digits.");
+    assert!(account_number.is_ascii(), "account_number must contain only characters '0' though '9'.");
+
+    let mut matches = Vec::new();
+
+    // Copy account number into mutable buffer
+    let mut buffer = [0;9];
+    buffer.copy_from_slice(account_number.as_bytes());
+
+    // For each digit position try swapping with possible alternatives and test if checksum is valid
+    for n in 0..buffer.len() {
+        let ch = buffer[n];
+        let alts = alternate_digits(ch);
+        for alt in alts {
+            buffer[n] = *alt;
+            let result = str::from_utf8(&buffer);
+            if let Ok(candidate) = result {
+                if is_checksum_valid(&candidate) {
+                    matches.push(candidate.to_string());
                 }
             }
-            bytes[n] = ch;
         }
+        buffer[n] = ch;
     }
     matches
 }

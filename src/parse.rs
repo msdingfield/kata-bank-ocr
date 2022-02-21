@@ -1,26 +1,20 @@
 use std::str;
 
+const ILLEGIBLE : u8 = '?' as u8;
+
 // Parser of Bank OCR account numbers
 pub struct Parser {
-    register: [u8; 10],
+    // Register to hold the state of each segment of the 9 digits
+    // Each digit is imagined as a 7 segment LED display so the status of the 7 segments can
+    // be stored in a byte.  Input is scanned and the bits corresponding to "on" segments are set.
+    // Patterns of bits corresponding to valid numbers are mapped to the corresponding character.
+    register: [u8; 9],
+
+    // The current line number
     line_number: usize,
+
+    // Flag to skip over lines in case of error
     skip: bool,
-}
-
-// Hold error information
-#[derive(PartialEq, Debug)]
-pub struct Error {
-    // Message describing the error
-    pub message : String,
-
-    // Line number of input where error occurred
-    pub line_number : usize,
-
-    // Column number of input where error occurred
-    pub col : usize,
-
-    // Row within the entry where error occurred
-    pub row : usize,
 }
 
 // Parsing status for current entry
@@ -29,14 +23,31 @@ pub enum Status {
     // Entry parsed successfully.  Account number is available.
     Success(String),
 
+    // Entry parsed but one or more digits are unreadable
     BadDigits {
+
+        // parsed number with '?' in place of unreadable digits
         account_number: String,
+
+        // possible account numbers that are very similar to the parsed number
         alternates: Vec<String>,
     },
 
-    // Error occurred.  Error field is populated with details.  Partially parsed account number
-    // may be available depending on error.
-    Error(Error),
+    // Error occurred.  Error field is populated with details.
+    // For example an invalid character will produce an error.
+    Error {
+        // Message describing the error
+        message : String,
+
+        // Line number of input where error occurred
+        line_number : usize,
+
+        // Column number of input where error occurred
+        col : usize,
+
+        // Row within the entry where error occurred
+        row : usize,
+    },
 
     // Not all rows of current entry have been parsed.  Continue parsing lines.
     Incomplete
@@ -47,18 +58,19 @@ impl Parser {
     // Create a new parser
     pub fn new() -> Parser {
         Parser {
-            register: [0; 10],
+            register: [0; 9],
             line_number: 0,
             skip: false,
         }
     }
 
+    // Get the current line number
     pub fn get_line_number(&self) -> usize {
         self.line_number
     }
 
     // Process a line of input
-    pub fn process_line(&mut self, line: String) -> Status {
+    pub fn process_line(&mut self, line: &str) -> Status {
         self.line_number += 1;
 
         let row = self.row();
@@ -104,31 +116,32 @@ impl Parser {
         };
     }
 
+    // Get row within the entry currently being parsed
     fn row(&self) -> usize {
         (self.line_number - 1) % 4
     }
 
     // Read account number from register and reset register to empty
-    fn read_register(&mut self) -> (bool, String, Vec<String>) {
+    fn read_register(&self) -> (bool, String, Vec<String>) {
         let mut buffer : [u8;9] = [0;9];
 
-        let mut bad = 0;
-        let mut last_bad = 0usize;
+        let mut bad_cnt = 0; // count of illegible digits
+        let mut last_bad = 0usize; // index of last illegible digit
         for index in 0..9 {
-            let digit = reg_to_digit(self.register[index]);
-            buffer[index] = digit as u8;
-            if digit == '?' {
-                bad += 1;
+            let digit = read_register_digit(self.register[index]);
+            buffer[index] = digit;
+            if digit == ILLEGIBLE {
+                bad_cnt += 1;
                 last_bad = index;
             }
         }
         let account_number = str::from_utf8(&buffer).unwrap().to_string();
 
         let mut alts = Vec::new();
-        match bad {
+        match bad_cnt {
             0 => (true, account_number, alts),
             1 => {
-                let alt_digits = possible_digits(self.register[last_bad]);
+                let alt_digits = find_register_digit_close_matches(self.register[last_bad]);
                 alt_digits.iter().for_each(|dig| {
                     buffer[last_bad] = *dig;
                     alts.push(str::from_utf8(&buffer).unwrap().to_string());
@@ -137,83 +150,87 @@ impl Parser {
             }
             _ => (false, account_number, alts)
         }
-
-
     }
 
+    // Clear contents of register
     fn clear_register(&mut self) {
-        for index in 0..9 {
-            self.register[index] = 0;
-        }
+        self.register.fill(0);
     }
 
     // Build a parsing error
     fn build_error(&mut self, message : String, col : usize) -> Status {
         self.skip = true;
-        Status::Error(Error {
+        Status::Error {
             message,
             line_number: self.line_number,
+            col,
             row: self.row(),
-            col
-        })
+        }
     }
 }
 
 // Determine the character that indicates an "on" element
 fn on_char(row: usize, col: usize) -> char {
-    match row * 10 + col {
-        0 => '\0',
-        1 => '_',
-        2 => '\0',
-        10 => '|',
-        11 => '_',
-        12 => '|',
-        20 => '|',
-        21 => '_',
-        22 => '|',
+    match row << 4 | col {
+        0x00 => '\0',
+        0x01 => '_',
+        0x02 => '\0',
+        0x10 => '|',
+        0x11 => '_',
+        0x12 => '|',
+        0x20 => '|',
+        0x21 => '_',
+        0x22 => '|',
         _ => '\0'
     }
 }
 
-fn possible_digits(reg: u8) -> Vec<u8> {
-    let mut alts = Vec::new();
-    for n in 1..=7 {
-        let alt = reg_to_digit(reg ^ (1 << n));
-        if alt != '?' {
-            alts.push(alt as u8);
+// Find digits that are a close match to the register element
+fn find_register_digit_close_matches(reg_element: u8) -> Vec<u8> {
+    let mut close_matches = Vec::new();
+    for n in 0..=6 {
+        let close_match = read_register_digit(reg_element ^ (1 << n));
+        if close_match != ILLEGIBLE {
+            close_matches.push(close_match as u8);
         }
     }
-    alts
+    close_matches
 }
 
 // Determine the output character associated with a value in the register
-fn reg_to_digit(val: u8) -> char {
-    match val {
-        222 => '0',
-        18 => '1',
-        188 => '2',
-        182 => '3',
-        114 => '4',
-        230 => '5',
-        238 => '6',
-        146 => '7',
-        254 => '8',
-        246 => '9',
-        _ => '?' // The value doesn't correspond to a numerical digit
+fn read_register_digit(reg_element: u8) -> u8 {
+    /*
+    Bit positions for each segment
+    -0-
+    123
+    456
+     */
+    match reg_element {
+        0b01111011 => '0' as u8,
+        0b01001000 => '1' as u8,
+        0b00111101 => '2' as u8,
+        0b01101101 => '3' as u8,
+        0b01001110 => '4' as u8,
+        0b01100111 => '5' as u8,
+        0b01110111 => '6' as u8,
+        0b01001001 => '7' as u8,
+        0b01111111 => '8' as u8,
+        0b01101111 => '9' as u8,
+        _ => ILLEGIBLE // The value doesn't correspond to a numerical digit
     }
 }
 
 // Determine the register bit which corresponds to an element
 fn bit_pos(row: usize, col: usize) -> usize {
-    match row * 10 + col {
-        1 => 7,
-        10 => 6,
-        11 => 5,
-        12 => 4,
-        20 => 3,
-        21 => 2,
-        22 => 1,
-        _ => 0
+    match row << 4 | col {
+        0x01 => 0,
+        0x10 => 1,
+        0x11 => 2,
+        0x12 => 3,
+        0x20 => 4,
+        0x21 => 5,
+        0x22 => 6,
+        _  => 7,
     }
 }
 
@@ -223,19 +240,19 @@ mod tests {
 
     #[test]
     fn possible_alternative_digits() {
-        assert_eq!(possible_digits(100), vec![]);
-        assert_eq!(possible_digits(94), vec!['0' as u8]);
-        assert_eq!(possible_digits(2), vec!['1' as u8]);
-        assert_eq!(possible_digits(60), vec!['2' as u8]);
-        assert_eq!(possible_digits(54), vec!['3' as u8]);
-        assert_eq!(possible_digits(98), vec!['4' as u8]);
-        assert_eq!(possible_digits(102), vec!['5' as u8]);
-        assert_eq!(possible_digits(110), vec!['6' as u8]);
-        assert_eq!(possible_digits(18), vec!['7' as u8]);
-        assert_eq!(possible_digits(126), vec!['8' as u8]);
-        assert_eq!(possible_digits(182), vec!['9' as u8]);
-        assert_eq!(possible_digits(82), vec!['4' as u8, '1' as u8]);
-        assert_eq!(possible_digits(190), vec!['2' as u8, '3' as u8, '8' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b00100110), vec![]);
+        assert_eq!(find_register_digit_close_matches(0b01111010), vec!['0' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01000000), vec!['1' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b00111100), vec!['2' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01101100), vec!['3' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01000110), vec!['4' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01100110), vec!['5' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01110110), vec!['6' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01001000), vec!['7' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01111110), vec!['8' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01101101), vec!['9' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01001010), vec!['1' as u8, '4' as u8]);
+        assert_eq!(find_register_digit_close_matches(0b01111101), vec!['8' as u8, '3' as u8, '2' as u8]);
     }
 
     #[test]
@@ -349,7 +366,7 @@ mod tests {
 
     #[test]
     fn illegible_digits_receive_placeholder() {
-        assert_eq!("ILLEGIBLE: 49006771? [\"490067713\", \"490067715\"]", parse_to_string([
+        assert_eq!("ILLEGIBLE: 49006771? [\"490067715\", \"490067713\"]", parse_to_string([
             "    _  _  _  _  _  _     _ ",
             "|_||_|| || ||_   |  |  | _ ",
             "  | _||_||_||_|  |  |  | _|",
@@ -409,18 +426,18 @@ mod tests {
     fn recovers_after_error() {
         // Error recovery
         let mut parser = Parser::new();
-        assert!(is_incomplete(&parser.process_line("    _  _  _  _  _  _     _ ".to_string())));
-        assert!(is_incomplete(&parser.process_line("|_||_|| || ||_   |  |  ||_ ".to_string())));
-        assert!(is_incomplete(&parser.process_line("  | _||_||_||_|  |  |  | _|".to_string())));
-        assert_eq!("490067715".to_string(), get_account_number(parser.process_line("".to_string())));
-        assert!(is_incomplete(&parser.process_line("    _  _     _  _  _  _  _ ".to_string())));
-        assert!(is_error     (&parser.process_line("  | _| x||_||_ |_   ||_||_|".to_string())));
-        assert!(is_incomplete(&parser.process_line("  | _| x||_||_ |_   ||_||_|".to_string())));
-        assert!(is_incomplete(&parser.process_line("".to_string())));
-        assert!(is_incomplete(&parser.process_line("    _  _  _  _  _  _     _ ".to_string())));
-        assert!(is_incomplete(&parser.process_line("|_||_|| || ||_   |  |  ||_ ".to_string())));
-        assert!(is_incomplete(&parser.process_line("  | _||_||_||_|  |  |  ||_|".to_string())));
-        assert_eq!("490067716".to_string(), get_account_number(parser.process_line("".to_string())));
+        assert!(is_incomplete(&parser.process_line("    _  _  _  _  _  _     _ ")));
+        assert!(is_incomplete(&parser.process_line("|_||_|| || ||_   |  |  ||_ ")));
+        assert!(is_incomplete(&parser.process_line("  | _||_||_||_|  |  |  | _|")));
+        assert_eq!("490067715".to_string(), get_account_number(parser.process_line("")));
+        assert!(is_incomplete(&parser.process_line("    _  _     _  _  _  _  _ ")));
+        assert!(is_error     (&parser.process_line("  | _| x||_||_ |_   ||_||_|")));
+        assert!(is_incomplete(&parser.process_line("  | _| x||_||_ |_   ||_||_|")));
+        assert!(is_incomplete(&parser.process_line("")));
+        assert!(is_incomplete(&parser.process_line("    _  _  _  _  _  _     _ ")));
+        assert!(is_incomplete(&parser.process_line("|_||_|| || ||_   |  |  ||_ ")));
+        assert!(is_incomplete(&parser.process_line("  | _||_||_||_|  |  |  ||_|")));
+        assert_eq!("490067716".to_string(), get_account_number(parser.process_line("")));
 
     }
 
@@ -428,7 +445,7 @@ mod tests {
         let mut parser = Parser::new();
 
         for line in lines {
-            let status = parser.process_line(String::from(line));
+            let status = parser.process_line(line);
             if is_complete(&status) {
                 return status;
             }
@@ -446,8 +463,8 @@ mod tests {
             Status::BadDigits { account_number, alternates } => {
                 format!("ILLEGIBLE: {} {:?}", account_number, alternates)
             }
-            Status::Error(error) => {
-                format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message)
+            Status::Error { message , line_number, col, row} => {
+                format!("ERROR: {}:{}: row {}: {}", line_number, col, row, message)
             }
             Status::Incomplete => {
                 String::from("Unexpected")
@@ -471,7 +488,7 @@ mod tests {
 
     fn is_error(status : &Status) -> bool {
         match status {
-            Status::Error(_) => true,
+            Status::Error{..} => true,
             _ => false,
         }
     }

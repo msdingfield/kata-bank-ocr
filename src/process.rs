@@ -1,20 +1,48 @@
-use crate::{Error, find_adjacent, is_checksum_valid, Parser, Status};
-use crate::process::Result::Success;
-use crate::Result::{BadChecksum, BadDigits, InvalidCharacter};
+use crate::{find_adjacent, is_checksum_valid, Parser, Status};
+use crate::Result::{Success, BadChecksum, BadDigits, Error};
 
+// Result for a single entry
 pub enum Result {
-    Success { account_number : String, line_number : u32 },
-    BadChecksum { account_number : String, alternates : Vec<String>, line_number : u32 },
-    BadDigits { account_number : String, alternates : Vec<String>, line_number : u32 },
-    InvalidCharacter { error : Error },
+    // Account number parsed and passes checksum
+    Success {
+        account_number : String, // Parsed account number
+        line_number : u32        // Line number of entry
+    },
+
+    // Account number parsed successfully but checksum failed
+    BadChecksum {
+        account_number : String,  // Parsed account number
+        alternates : Vec<String>, // Numbers similar to the account number with valid checksum
+                                  // it is likely there was a scanner misread and one of these is
+                                  // the actual account number
+        line_number : u32         // Line number of entry
+    },
+
+    // One or more digits was illegible
+    BadDigits {
+        account_number : String,  // Parsed account number. '?' character fills illegible digits
+        alternates : Vec<String>, // Possible numbers found be looking for close matches for illegible digit
+        line_number : u32         // Line number of entry
+    },
+
+    // Parse error, the input file is invalid
+    Error {
+        message : String,  // Message describing the nature of the error
+        line_number : u32, // Line number where error occurred
+        col : u32,         // Column number where error occurred
+        row : u32          // Row within the entry being parsed where the error occurred
+    },
 }
 
 // Transforms an input iterator into a processed output iterator
 pub struct Processor<I>
     where I: Iterator<Item = String>
 {
-    pub lines: I,
-    pub parser: Parser,
+    // Iterator supplying input lines
+    lines: I,
+
+    // Input parser
+    parser: Parser,
 }
 
 impl<I> Processor<I>
@@ -27,6 +55,7 @@ impl<I> Processor<I>
         }
     }
 
+    // Create a Success result
     fn success(&self, account_number : String) -> Option<Result> {
         Some(Success {
            account_number,
@@ -34,6 +63,7 @@ impl<I> Processor<I>
         })
     }
 
+    // Create a BadChecksum result
     fn bad_checksum(&self, account_number : String, alternates : Vec<String>) -> Option<Result> {
         Some(BadChecksum {
             account_number,
@@ -42,6 +72,7 @@ impl<I> Processor<I>
         })
     }
 
+    // Create a BadDigits result
     fn bad_digits(&self, account_number : String, alternates : Vec<String>) -> Option<Result> {
         Some(BadDigits {
             account_number,
@@ -50,8 +81,9 @@ impl<I> Processor<I>
         })
     }
 
-    fn invalid_character(&self, error : Error) -> Option<Result> {
-        Some(InvalidCharacter { error })
+    // Create an Error result
+    fn error(&self, message : String, line_number : u32, col : u32, row : u32) -> Option<Result> {
+        Some(Error { message, line_number, col, row})
     }
 }
 
@@ -66,19 +98,15 @@ impl<I> Iterator for Processor<I>
             let next = self.lines.next();
             match next {
                 Option::Some(line) => {
-                    let status = self.parser.process_line(line);
+                    let status = self.parser.process_line(&line);
 
                     match status {
                         Status::Success(account_number) => {
                             if is_checksum_valid(&account_number) {
                                 return self.success(account_number)
                             } else {
-                                let alts = find_adjacent(&account_number);
-                                match alts.len() {
-                                    0 => return self.bad_checksum(account_number, alts),
-                                    1 => return self.bad_checksum(account_number, alts),
-                                    _ => return self.bad_checksum(account_number, alts),
-                                }
+                                let alternates = find_adjacent(&account_number);
+                                return self.bad_checksum(account_number, alternates);
                             }
                         }
                         Status::BadDigits { account_number, alternates } => {
@@ -90,9 +118,13 @@ impl<I> Iterator for Processor<I>
                                     .collect()
                             );
                         }
-                        Status::Error(error) => {
-                            return self.invalid_character(error);
-                            // return self.success(format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message))
+                        Status::Error{message, line_number, col, row} => {
+                            return self.error(
+                                message,
+                                line_number as u32,
+                                col as u32,
+                                row as u32
+                            );
                         }
                         Status::Incomplete => {
                             // Keep going if parse of number is incomplete

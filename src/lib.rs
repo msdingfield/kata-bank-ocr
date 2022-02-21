@@ -6,24 +6,26 @@ use parse::*;
 use checksum::*;
 pub use process::*;
 
+// Format a result from Process as output string
 pub fn format_line(line : Result) -> String {
     match line {
         Result::Success {account_number, line_number: _} => account_number,
         Result::BadChecksum {account_number, line_number, mut alternates} => {
             match alternates.len() {
                 0 => format!("{} ERR [line {}]", account_number, line_number),
-                1 => alternates.pop().unwrap(),
+                1 => alternates.pop().unwrap(), // Assume that if there is only 1 alternate it must be correct!
                 _ => format!("{} AMB [line {} could be {:?}]",account_number, line_number, alternates),
             }
         }
         Result::BadDigits {account_number, line_number, mut alternates} => {
             match alternates.len() {
                 0 => format!("{} ILL [line {}]", account_number, line_number),
-                1 => alternates.pop().unwrap(),
+                1 => alternates.pop().unwrap(), // Assume that if there is only 1 alternate it must be correct!
                 _ => format!("{} AMB [line {} could be {:?}]",account_number, line_number, alternates),
             }
         },
-        Result::InvalidCharacter {error} => format!("ERROR: {}:{}: row {}: {}", error.line_number, error.col, error.row, error.message),
+        Result::Error {message, line_number, col, row} =>
+            format!("ERROR: {}:{}: row {}: {}", line_number, col, row, message),
     }
 }
 
